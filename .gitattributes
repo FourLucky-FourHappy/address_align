@@ -1,0 +1,2 @@
+pretrained/**/*.bin filter=lfs diff=lfs merge=lfs -text
+pretrained/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
