@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 import torch
 from sklearn.metrics import accuracy_score, f1_score
@@ -18,8 +19,16 @@ class TrainingConfig:
     learning_rate: float = 5e-5
     output_dir: str = './models'
     log_dir: str = './logs'
-    save_steps: int = 100
+    save_steps: int = 100  # 每隔多少个训练步检查一次验证指标
     validation_rate: float = 0.1
+    early_stop_metric: str = 'loss'  # 用哪个验证指标判断模型有没有进步
+    early_stop_patience: int = 3  # 连续多少次验证没有刷新历史最佳时停止
+
+    def __post_init__(self):
+        if self.early_stop_metric not in ('loss', 'accuracy', 'f1'):
+            raise ValueError('early_stop_metric 必须是 loss、accuracy 或 f1')
+        if self.early_stop_patience < 1:
+            raise ValueError('early_stop_patience 必须大于等于 1')
 
 class Trainer:
     def __init__(self,device,
@@ -47,6 +56,9 @@ class Trainer:
             log_dir=str(Path(self.training_config.log_dir) / time.strftime('%Y-%m-%d_%H-%M-%S')))
         # 全局的step
         self.step = 1
+        # 初始最佳分数设为负无穷，让第一次有效的验证结果成为历史最佳
+        self.early_stop_best_score = -float('inf')
+        self.early_stop_counter = 0  # 连续未刷新历史最佳的验证次数
 
     def _get_dataloader(self, dataset, *, shuffle=True):
         dataset.set_format(type='torch')
@@ -76,6 +88,14 @@ class Trainer:
                         tqdm.write(f'Validation (step {self.step}): {metrics_str}')
                         for key, value in metrics.items():
                             self.writer.add_scalar(f'Validation/{key}', value, self.step)
+                        # 每次验证后检查早停，return 会退出整个训练循环
+                        if self._should_stop(metrics):
+                            patience = self.training_config.early_stop_patience
+                            tqdm.write(f'早停：第 {self.step} 步，连续 {patience} 次验证未改善')
+                            # 本步已完成，退出前也要递增步数并写出 TensorBoard 日志
+                            self.step += 1
+                            self.writer.flush()
+                            return
                 self.step += 1
 
     def train_one_step(self,inputs):
@@ -129,6 +149,25 @@ class Trainer:
             'f1': f1_score(all_labels, all_predictions, average='weighted', zero_division=0),
         }
 
+    def _should_stop(self, metrics):
+        metric_name = self.training_config.early_stop_metric
+        metric = metrics[metric_name]
+        # loss 越小越好，取负后就能和 accuracy、f1 一样按越大越好比较
+        score = -metric if metric_name == 'loss' else metric
+
+        # 只有有效分数严格超过历史最佳时，才保存新权重并清零计数
+        if isfinite(score) and score > self.early_stop_best_score:
+            best_model_path = Path(self.training_config.output_dir) / 'best'
+            self.model.save_pretrained(str(best_model_path))
+            self.early_stop_best_score = score
+            self.early_stop_counter = 0
+            tqdm.write(f'保存最佳模型至 {best_model_path}')
+            return False
+
+        # 持平也算未改善，累计到阈值后通知 train() 停止
+        self.early_stop_counter += 1
+        return self.early_stop_counter >= self.training_config.early_stop_patience
+
 def train():
     # device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -145,7 +184,7 @@ def train():
         label2id=label2id
     )
 
-    training_config = TrainingConfig()
+    training_config = TrainingConfig(output_dir=str(config.MODELS_DIR))
     # 数据划分
     splits = get_dataset('train').train_test_split(
         test_size=training_config.validation_rate,
