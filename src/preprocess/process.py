@@ -52,7 +52,8 @@ def preprocess():
         encode,
         remove_columns=dataset_dict["train"].column_names,
     )
-
+    encoded_dataset.save_to_disk(config.PROCESSED_DATA_DIR)
+    print("数据预处理完成！")
 
 if __name__ == '__main__':
     preprocess()
