@@ -2,7 +2,8 @@ import torch
 from transformers import AutoModelForTokenClassification, AutoTokenizer
 
 from configuration import config
-
+from address.region_repository import RegionRepository
+from address.service import AddressAlignmentService
 
 class Predictor:
     def __init__(self, device, model, tokenizer):
@@ -77,28 +78,26 @@ def predict():
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True, local_files_only=True)
     predictor = Predictor(device, model, tokenizer)
 
-    def extract_address(text: str, labels: list[str]) -> dict[str, str | None]:
-        # 为省、市、区县等字段各建一个列表，按原文顺序收集字符。
-        parts = {field: [] for field in config.FIELD_NAMES}
-
-        # 字符和标签必须一一对应，长度不一致时直接报错。
-        for char, label in zip(text, labels, strict=True):
-            if label == "O":
-                continue
-
-            field = label.split("-", 1)[-1]  # B-prov、I-prov、E-prov 都取出 prov
-            if field in parts:
-                parts[field].append(char)
-
-        # 将同一字段的字符拼成字符串，没识别到的字段用 None 表示。
-        return {field: "".join(chars) or None for field, chars in parts.items()}
-
-    text = "中国浙江省杭州市余杭区葛墩路27号楼傅婷15830444519"
-    labels = predictor.predict(text)
-    result = extract_address(text, labels)
-    # 展示时将内部字段名转成中文，缺失的字段显示为“无”。
-    for field, name in config.FIELD_NAMES.items():
-        print(f"- {name}：{result[field] or '无'}")
+    texts = [
+        "中国浙江省杭州市余杭区葛墩路27号楼傅婷15830444519",
+        "北京市市辖区通州区永乐店镇27号楼汪明13334219987",
+        "高霞 13139243427北京市市辖区东风街道27号楼",
+        "新疆维吾尔自治区划阿拉尔市金杨镇27号楼 刘燕 14727827196",
+        "甘肃省南市文县碧口镇27号楼陈桂兰 13939269190",
+        "陕西省渭南市华阴市罗镇27号楼 赵鑫15687584092",
+        "邱金凤18582166250西藏自治区拉萨市墨竹工卡县工卡镇27号楼",
+        "广州市花都区花东镇27号楼张荣   18736672007",
+        "北京市拱辰街道27号楼2单元 陈桂兰 13939269190",
+        "河北省唐山市玉田县林北仓镇27号楼5单元 张荣 18736672007",
+        "河北省朔州市玉田县林南仓镇27号楼5单元 张荣 18736672007"
+    ]
+    service = AddressAlignmentService(predictor, RegionRepository())
+    results = service.align_address(texts)
+    for index, result in enumerate(results, start=1):
+        print(f"\n第 {index} 条地址")
+        # 展示时将内部字段名转成中文，缺失的字段显示为“无”。
+        for field, name in config.FIELD_NAMES.items():
+            print(f"- {name}：{result[field] or '无'}")
 
 if __name__ == '__main__':
     predict()
